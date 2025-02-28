@@ -15,7 +15,7 @@ Features
     Cross-Platform Build
     Uses CMake to build on Linux and soon to cross compile for Windows.
 
-Project Structure
+Project Structure:
 
 Modular/
 ├── CMakeLists.txt        # CMake configuration
