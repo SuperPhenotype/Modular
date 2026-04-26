@@ -1,0 +1,17 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:Modular.Gui.ViewModels"
+             xmlns:views="using:Modular.Gui.Views"
+             xmlns:mi="using:Material.Icons.Avalonia"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+             x:Class="Modular.Gui.Views.BackupsView"
+             x:DataType="vm:BackupsViewModel">
+
+    <Design.DataContext>
+        <vm:BackupsViewModel/>
+    </Design.DataContext>
+
+    <views:SnapshotView DataContext="{Binding SnapshotViewModel}"/>
+</UserControl>

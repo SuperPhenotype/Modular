@@ -1,0 +1,254 @@
+using Microsoft.Extensions.Logging;
+using Modular.Core.Archives;
+using Modular.Core.Installers.Cyberpunk;
+using Modular.Core.Installers.FF7Remake;
+using Modular.Core.Installers.HorizonZeroDawn;
+using Modular.Core.Installers.Steam;
+using Modular.Core.Telemetry;
+using Modular.Sdk.Archives;
+using Modular.Sdk.Installers;
+
+namespace Modular.Core.Installers;
+
+/// <summary>
+/// Manages mod installation workflows by coordinating installer selection and execution.
+/// </summary>
+public class InstallerManager
+{
+    private readonly List<IModInstaller> _installers;
+    private readonly ILogger<InstallerManager>? _logger;
+    private readonly TelemetryService? _telemetry;
+
+    public InstallerManager(
+        IArchiveReaderFactory? archiveReaderFactory = null,
+        ILogger<InstallerManager>? logger = null,
+        TelemetryService? telemetry = null)
+    {
+        _logger = logger;
+        _telemetry = telemetry;
+        _installers = new List<IModInstaller>();
+
+        var factory = archiveReaderFactory ?? new ArchiveReaderFactory();
+
+        // Register built-in installers with shared archive reader factory
+        RegisterInstaller(new LooseFileInstaller(factory));
+        RegisterInstaller(new FomodInstaller(factory));
+        RegisterInstaller(new BepInExInstaller(factory));
+        RegisterInstaller(new SteamModInstaller(factory));
+        RegisterInstaller(new UnrealPakInstaller(factory));
+        RegisterInstaller(new CyberpunkModInstaller(factory));
+        RegisterInstaller(new FF7RModInstaller(factory));
+        RegisterInstaller(new HZDModInstaller(factory));
+    }
+
+    /// <summary>
+    /// Registers an installer.
+    /// </summary>
+    public void RegisterInstaller(IModInstaller installer)
+    {
+        _installers.Add(installer);
+        _logger?.LogInformation("Registered installer: {InstallerId} (Priority: {Priority})",
+            installer.InstallerId, installer.Priority);
+    }
+
+    /// <summary>
+    /// Registers multiple installers.
+    /// </summary>
+    public void RegisterInstallers(IEnumerable<IModInstaller> installers)
+    {
+        foreach (var installer in installers)
+        {
+            RegisterInstaller(installer);
+        }
+    }
+
+    /// <summary>
+    /// Detects the best installer for an archive, optionally scoped to a specific game.
+    /// Game-specific installers are excluded when <paramref name="gameId"/> is provided
+    /// and does not appear in their <see cref="IModInstaller.SupportedGameIds"/> list.
+    /// Universal installers (null <see cref="IModInstaller.SupportedGameIds"/>) are always considered.
+    /// </summary>
+    public async Task<InstallerSelection?> SelectInstallerAsync(
+        string archivePath,
+        string? gameId = null,
+        CancellationToken ct = default)
+    {
+        var detectionResults = new List<(IModInstaller Installer, InstallDetectionResult Result)>();
+
+        var candidates = string.IsNullOrEmpty(gameId)
+            ? _installers
+            : _installers.Where(i =>
+                i.SupportedGameIds == null ||
+                i.SupportedGameIds.Count == 0 ||
+                i.SupportedGameIds.Any(g =>
+                    string.Equals(g, gameId, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+        foreach (var installer in candidates)
+        {
+            try
+            {
+                var result = await installer.DetectAsync(archivePath, ct);
+                if (result.CanHandle)
+                {
+                    detectionResults.Add((installer, result));
+                    _logger?.LogDebug(
+                        "Installer {InstallerId} can handle {Archive}: {Confidence:P0} - {Reason}",
+                        installer.InstallerId, Path.GetFileName(archivePath),
+                        result.Confidence, result.Reason);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error during detection with installer {InstallerId}",
+                    installer.InstallerId);
+            }
+        }
+
+        if (detectionResults.Count == 0)
+        {
+            _logger?.LogWarning("No installer found for {Archive}", Path.GetFileName(archivePath));
+            return null;
+        }
+
+        // Select installer with highest priority, then highest confidence
+        var selected = detectionResults
+            .OrderByDescending(r => r.Installer.Priority)
+            .ThenByDescending(r => r.Result.Confidence)
+            .First();
+
+        _logger?.LogInformation(
+            "Selected installer {InstallerId} for {Archive} (Confidence: {Confidence:P0})",
+            selected.Installer.InstallerId, Path.GetFileName(archivePath),
+            selected.Result.Confidence);
+
+        return new InstallerSelection
+        {
+            Installer = selected.Installer,
+            DetectionResult = selected.Result,
+            AlternativeInstallers = detectionResults
+                .Where(r => r.Installer != selected.Installer)
+                .Select(r => r.Installer)
+                .ToList()
+        };
+    }
+
+    /// <summary>
+    /// Analyzes and creates an installation plan.
+    /// </summary>
+    public async Task<InstallPlan> CreateInstallPlanAsync(
+        string archivePath,
+        InstallContext context,
+        IModInstaller? preferredInstaller = null,
+        CancellationToken ct = default)
+    {
+        IModInstaller? installer = preferredInstaller;
+
+        if (installer == null)
+        {
+            var selection = await SelectInstallerAsync(archivePath, context.GameId, ct);
+            if (selection == null)
+            {
+                throw new InvalidOperationException($"No installer found for {archivePath}");
+            }
+            installer = selection.Installer;
+        }
+
+        _logger?.LogInformation("Creating install plan with {InstallerId}", installer.InstallerId);
+
+        return await installer.AnalyzeAsync(archivePath, context, ct);
+    }
+
+    /// <summary>
+    /// Executes an installation plan.
+    /// </summary>
+    public async Task<InstallResult> ExecuteInstallAsync(
+        InstallPlan plan,
+        IProgress<InstallProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        var installer = _installers.FirstOrDefault(i => i.InstallerId == plan.InstallerId);
+        if (installer == null)
+        {
+            throw new InvalidOperationException(
+                $"Installer {plan.InstallerId} not found. Cannot execute plan.");
+        }
+
+        _logger?.LogInformation(
+            "Executing installation with {InstallerId}: {FileCount} files, {Size:N0} bytes",
+            installer.InstallerId, plan.Operations.Count, plan.TotalBytes);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await installer.InstallAsync(plan, progress, ct);
+        stopwatch.Stop();
+
+        _telemetry?.RecordInstallerResult(installer.InstallerId, result.Success, stopwatch.Elapsed);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Installs a mod archive with automatic installer selection.
+    /// </summary>
+    public async Task<InstallResult> InstallModAsync(
+        string archivePath,
+        InstallContext context,
+        IProgress<InstallProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        // Select installer
+        var selection = await SelectInstallerAsync(archivePath, context.GameId, ct);
+        if (selection == null)
+        {
+            return new InstallResult
+            {
+                Success = false,
+                Error = "No suitable installer found for this archive"
+            };
+        }
+
+        // Create plan
+        var plan = await selection.Installer.AnalyzeAsync(archivePath, context, ct);
+
+        // Execute
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await selection.Installer.InstallAsync(plan, progress, ct);
+        stopwatch.Stop();
+
+        _telemetry?.RecordInstallerResult(selection.Installer.InstallerId, result.Success, stopwatch.Elapsed);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Gets all registered installers.
+    /// </summary>
+    public IReadOnlyList<IModInstaller> GetInstallers() => _installers.AsReadOnly();
+
+    /// <summary>
+    /// Gets an installer by ID.
+    /// </summary>
+    public IModInstaller? GetInstaller(string installerId) =>
+        _installers.FirstOrDefault(i => i.InstallerId == installerId);
+}
+
+/// <summary>
+/// Result of installer selection.
+/// </summary>
+public class InstallerSelection
+{
+    /// <summary>
+    /// Selected installer.
+    /// </summary>
+    public required IModInstaller Installer { get; init; }
+
+    /// <summary>
+    /// Detection result for the selected installer.
+    /// </summary>
+    public required InstallDetectionResult DetectionResult { get; init; }
+
+    /// <summary>
+    /// Alternative installers that can handle the archive.
+    /// </summary>
+    public List<IModInstaller> AlternativeInstallers { get; init; } = new();
+}
