@@ -78,6 +78,13 @@ public class GameBananaV11Record
     [JsonPropertyName("_aPreviewMedia")]
     public GameBananaPreviewMedia? PreviewMedia { get; set; }
 
+    /// <summary>"show", "warn" (suggestive) or "hide" (rated for adult content, hidden by default).</summary>
+    [JsonPropertyName("_sInitialVisibility")]
+    public string? InitialVisibility { get; set; }
+
+    [JsonPropertyName("_nLikeCount")]
+    public int? LikeCount { get; set; }
+
     /// <summary>The top-level category the mod is filed under, such as "Skins".</summary>
     [JsonPropertyName("_aRootCategory")]
     public GameBananaCategoryRef? RootCategory { get; set; }
@@ -270,3 +277,13 @@ public class GameBananaModProfile
     [JsonPropertyName("_tsDateModified")]
     public long? DateModifiedTimestamp { get; set; }
 }
+
+/// <summary>
+/// A page of GameBanana mods after the adult filter.
+/// </summary>
+/// <param name="Mods">The mods.</param>
+/// <param name="TotalCount">GameBanana's count for the search, before the adult filter.</param>
+/// <param name="NextSourcePage">GameBanana's page the following page starts at.</param>
+/// <param name="HasMore">Whether GameBanana has more pages.</param>
+public sealed record GameBananaPage(
+    IReadOnlyList<Modular.Sdk.Backends.Common.BackendMod> Mods, int TotalCount, int NextSourcePage, bool HasMore);

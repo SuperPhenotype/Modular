@@ -18,6 +18,7 @@ public partial class GameBananaBackend : IModBackend, IRequirementsBackend
 {
     private const string BaseUrl = "https://gamebanana.com/apiv11";
     private const int DefaultPageSize = 15;
+    private const int MaxIndexPageSize = 50;
     private const int MinGameNameLength = 3;
     private static readonly TimeSpan ThrottleDelay = TimeSpan.FromMilliseconds(500);
 
@@ -252,6 +253,138 @@ public partial class GameBananaBackend : IModBackend, IRequirementsBackend
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// One page of mods, searched or browsed, in the order asked for.
+    /// </summary>
+    /// <param name="query">
+    /// The search. <see cref="ModSearchQuery.GameDomain"/> is a GameBanana game id; anything
+    /// else searches every game. Empty terms browse.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// Terms with <see cref="ModSortOrder.Relevance"/> use GameBanana's own search, which also
+    /// matches descriptions and ranks by best match (15 a page, set by GameBanana). Every
+    /// other order lists through Mod/Index, which sorts but matches names only. With no
+    /// terms, Relevance lists the most liked: there is nothing to rank against.
+    /// </para>
+    /// <para>
+    /// GameBanana hides mods rated for adult content by default (visibility "hide"). Its API
+    /// cannot filter on that, so the page is filtered here and can come back shorter than
+    /// asked for; <see cref="ModSearchResult.TotalCount"/> counts before the filter.
+    /// </para>
+    /// </remarks>
+    public async Task<ModSearchResult> SearchModsAsync(ModSearchQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var (mods, total, pageSize) = await FetchPageAsync(query, Math.Max(1, query.Page), ct);
+        return new ModSearchResult { Mods = mods, TotalCount = total, Page = Math.Max(1, query.Page), PageSize = pageSize };
+    }
+
+    /// <summary>
+    /// A page of up to <see cref="ModSearchQuery.PageSize"/> mods that pass the adult filter,
+    /// reading GameBanana's pages from <paramref name="fromSourcePage"/> on until it has them
+    /// (five requests at most).
+    /// </summary>
+    /// <remarks>
+    /// GameBanana cannot leave rated mods out, and in some games most of the popular ones are
+    /// rated, so one of its pages can hold only a few that pass. Pass
+    /// <see cref="GameBananaPage.NextSourcePage"/> back in for the following page.
+    /// </remarks>
+    public async Task<GameBananaPage> FillPageAsync(ModSearchQuery query, int fromSourcePage, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        const int MaxRequests = 5;
+        var wanted = Math.Clamp(query.PageSize, 1, MaxIndexPageSize);
+        var mods = new List<BackendMod>();
+        var sourcePage = Math.Max(1, fromSourcePage);
+        var total = 0;
+        var more = true;
+
+        for (var i = 0; i < MaxRequests && mods.Count < wanted && more; i++)
+        {
+            var (found, count, size) = await FetchPageAsync(query, sourcePage, ct);
+            mods.AddRange(found);
+            total = count;
+            more = (long)sourcePage * size < count;
+            sourcePage++;
+        }
+
+        return new GameBananaPage(mods, total, sourcePage, more);
+    }
+
+    private async Task<(List<BackendMod> Mods, int Total, int PageSize)> FetchPageAsync(
+        ModSearchQuery query, int page, CancellationToken ct)
+    {
+        var terms = query.Terms?.Trim() ?? string.Empty;
+        var gameId = int.TryParse(query.GameDomain, out var parsed) && parsed > 0 ? parsed : (int?)null;
+        var bestMatch = terms.Length > 0 && query.SortBy == ModSortOrder.Relevance;
+        var pageSize = bestMatch ? DefaultPageSize : Math.Clamp(query.PageSize, 1, MaxIndexPageSize);
+
+        var request = bestMatch
+            ? _client.GetAsync("Util/Search/Results")
+                .WithArgument("_sModelName", "Mod")
+                .WithArgument("_sOrder", "best_match")
+                .WithArgument("_sSearchString", terms)
+            : _client.GetAsync("Mod/Index")
+                .WithArgument("_sSort", IndexSort(query.SortBy));
+        request = request
+            .WithArgument("_nPage", page.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .WithArgument("_nPerpage", pageSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (gameId is { } id)
+        {
+            request = request.WithArgument(bestMatch ? "_idGameRow" : "_aFilters[Generic_Game]",
+                id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (!bestMatch && terms.Length > 0)
+            request = request.WithArgument("_aFilters[Generic_Name]", "contains," + terms);
+
+        ct.ThrowIfCancellationRequested();
+        await ThrottleAsync();
+        var response = await request.AsJsonAsync();
+        var listing = JsonSerializer.Deserialize<GameBananaV11Response>(response.RootElement.GetRawText());
+
+        var mods = (listing?.Records ?? [])
+            .Where(r => r.Id != 0 && !string.IsNullOrEmpty(r.Name) &&
+                        (r.ModelName == null || string.Equals(r.ModelName, "Mod", StringComparison.OrdinalIgnoreCase)))
+            .Select(MapListed)
+            .Where(m => query.AdultContent is not { } adult || m.IsAdult == adult)
+            .ToList();
+
+        return (mods, listing?.Metadata?.RecordCount ?? mods.Count, pageSize);
+    }
+
+    // Mod/Index's sort names; GameBanana has no download count to show, but sorts by it.
+    private static string IndexSort(ModSortOrder order) => order switch
+    {
+        ModSortOrder.Downloads => "Generic_MostDownloaded",
+        ModSortOrder.Updated => "Generic_LatestUpdated",
+        ModSortOrder.Added => "Generic_Newest",
+        _ => "Generic_MostLiked"
+    };
+
+    private BackendMod MapListed(GameBananaV11Record record)
+    {
+        var modId = record.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return new BackendMod
+        {
+            ModId = modId,
+            Name = record.Name!,
+            BackendId = Id,
+            Url = record.ProfileUrl ?? $"https://gamebanana.com/mods/{modId}",
+            Author = record.Submitter?.Name,
+            UpdatedAt = record.DateModifiedTimestamp.HasValue
+                ? DateTimeOffset.FromUnixTimeSeconds(record.DateModifiedTimestamp.Value).DateTime
+                : null,
+            GameDomain = record.Game?.Name,
+            CategoryName = record.RootCategory?.Name,
+            ThumbnailUrl = GetThumbnailUrl(record.PreviewMedia),
+            EndorsementCount = record.LikeCount,
+            IsAdult = string.Equals(record.InitialVisibility, "hide", StringComparison.OrdinalIgnoreCase)
+        };
     }
 
     /// <summary>

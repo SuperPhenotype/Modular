@@ -28,7 +28,7 @@ public partial class GameBananaSearchViewModel : ViewModelBase
     private bool _isLoading;
 
     [ObservableProperty]
-    private string _statusMessage = "Enter a search term to find mods on GameBanana";
+    private string _statusMessage = "Search, or leave the search empty to browse; pick a game to stay within it";
 
     [ObservableProperty]
     private ObservableCollection<ModDisplayModel> _searchResults = new();
@@ -38,6 +38,40 @@ public partial class GameBananaSearchViewModel : ViewModelBase
 
     [ObservableProperty]
     private int _selectedCount;
+
+    /// <summary>
+    /// GameBanana's orders. "Relevance" is its best-match search when there are terms and the
+    /// most liked when there are none.
+    /// </summary>
+    private static readonly IReadOnlyList<SortChoice> Sorts =
+    [
+        new("Relevance", ModSortOrder.Relevance),
+        new("Most downloads", ModSortOrder.Downloads),
+        new("Most liked", ModSortOrder.Endorsements),
+        new("Recently updated", ModSortOrder.Updated),
+        new("Recently added", ModSortOrder.Added),
+    ];
+
+    public IReadOnlyList<SortChoice> SortChoices => Sorts;
+
+    [ObservableProperty]
+    private SortChoice _selectedSort = Sorts[0];
+
+    [ObservableProperty]
+    private bool _adultContentOnly;
+
+    [ObservableProperty]
+    private int _currentPage = 1;
+
+    [ObservableProperty]
+    private bool _hasNextPage;
+
+    [ObservableProperty]
+    private bool _hasPreviousPage;
+
+    partial void OnSelectedSortChanged(SortChoice value) => _ = ExecuteSearchAsync();
+
+    partial void OnAdultContentOnlyChanged(bool value) => _ = ExecuteSearchAsync();
 
     /// <summary>The game the search is limited to; none searches every game.</summary>
     public GamePickerViewModel Game { get; }
@@ -63,11 +97,7 @@ public partial class GameBananaSearchViewModel : ViewModelBase
         Game = new GamePickerViewModel(
             (name, ct) => backend.SearchGamesAsync(name, ct: ct),
             settings.GameBananaGameIds.Select(id => id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        Game.GameChosen += (_, _) =>
-        {
-            if (!string.IsNullOrWhiteSpace(SearchText))
-                _ = ExecuteSearchAsync();
-        };
+        Game.GameChosen += (_, _) => _ = ExecuteSearchAsync();
     }
 
     partial void OnSearchTextChanged(string value)
@@ -79,20 +109,44 @@ public partial class GameBananaSearchViewModel : ViewModelBase
             null, delay, System.Threading.Timeout.Infinite);
     }
 
+    // GameBanana's page each of ours starts at: ours can span several of its pages once the
+    // adult filter has thinned them out.
+    private readonly List<int> _pageStarts = [1];
+    private int _nextSourcePage = 1;
+
     [RelayCommand]
     private async Task ExecuteSearchAsync()
+    {
+        CurrentPage = 1;
+        _pageStarts.Clear();
+        _pageStarts.Add(1);
+        await LoadPageAsync();
+    }
+
+    [RelayCommand]
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        CurrentPage++;
+        if (_pageStarts.Count < CurrentPage)
+            _pageStarts.Add(_nextSourcePage);
+        await LoadPageAsync();
+    }
+
+    [RelayCommand]
+    private async Task PreviousPageAsync()
+    {
+        if (CurrentPage <= 1) return;
+        CurrentPage--;
+        await LoadPageAsync();
+    }
+
+    // Empty search text browses, in the chosen order, one game or all of them.
+    private async Task LoadPageAsync()
     {
         if (_backend == null)
         {
             StatusMessage = "GameBanana backend not available";
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(SearchText))
-        {
-            SearchResults.Clear();
-            TotalResults = 0;
-            StatusMessage = "Enter a search term to find mods on GameBanana";
             return;
         }
 
@@ -109,27 +163,30 @@ public partial class GameBananaSearchViewModel : ViewModelBase
                 {
                     SearchResults.Clear();
                     TotalResults = 0;
+                    HasNextPage = HasPreviousPage = false;
                     StatusMessage = $"No GameBanana game is named \"{Game.Text.Trim()}\". Pick one from the list, or clear it to search every game.";
                     return;
                 }
             }
 
-            int? gameId = game != null && int.TryParse(game.Id, out var parsedId) ? parsedId : null;
-            StatusMessage = $"Searching GameBanana for \"{SearchText}\"{(game != null ? $" in {game.Name}" : "")}...";
+            var terms = SearchText.Trim();
+            var where = game != null ? $" in {game.Name}" : "";
+            StatusMessage = terms.Length == 0
+                ? $"Listing GameBanana mods{where} ({SelectedSort.Label.ToLowerInvariant()})..."
+                : $"Searching GameBanana for \"{terms}\"{where}...";
 
-            var results = await _backend.SearchModsAsync(SearchText, gameId: gameId, maxResults: 50);
-
-            // Rank by fuzzy score but keep ALL API results — the API already did relevance
-            // filtering, so we only reorder; items with score 0 go to the end rather than
-            // being discarded (fixes empty-result bug when API matches on description/tags
-            // rather than name).
-            var scored = results
-                .Select(mod => (mod, score: FuzzyMatcher.Score(SearchText, mod.Name)))
-                .OrderByDescending(x => x.score)
-                .Select(x => x.mod);
+            var result = await _backend.FillPageAsync(new ModSearchQuery
+            {
+                Terms = terms,
+                GameDomain = game?.Id,
+                SortBy = SelectedSort.Order,
+                PageSize = 50,
+                AdultContent = AdultContentOnly
+            }, _pageStarts[CurrentPage - 1]);
+            _nextSourcePage = result.NextSourcePage;
 
             SearchResults.Clear();
-            foreach (var mod in scored)
+            foreach (var mod in result.Mods)
             {
                 var display = new ModDisplayModel(mod);
                 display.PropertyChanged += (_, e) =>
@@ -140,10 +197,13 @@ public partial class GameBananaSearchViewModel : ViewModelBase
                 SearchResults.Add(display);
             }
 
-            TotalResults = SearchResults.Count;
-            StatusMessage = TotalResults == 0
-                ? $"No mods found for \"{SearchText}\""
-                : $"Found {TotalResults} result(s) on GameBanana";
+            TotalResults = result.TotalCount;
+            HasNextPage = result.HasMore;
+            HasPreviousPage = CurrentPage > 1;
+            UpdateSelectedCount();
+            StatusMessage = result.TotalCount == 0
+                ? terms.Length == 0 ? $"No mods listed{where}" : $"No mods found for \"{terms}\""
+                : $"Page {CurrentPage}: {SearchResults.Count} mod(s) shown; {result.TotalCount} on GameBanana before the adult filter";
         }
         catch (Exception ex)
         {

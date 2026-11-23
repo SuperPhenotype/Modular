@@ -29,7 +29,7 @@ public partial class ModIoSearchViewModel : ViewModelBase
     private bool _isLoading;
 
     [ObservableProperty]
-    private string _statusMessage = "Enter a search term to find mods on mod.io";
+    private string _statusMessage = "Pick a game, then search, or leave the search empty to browse";
 
     [ObservableProperty]
     private ObservableCollection<ModDisplayModel> _searchResults = new();
@@ -39,6 +39,37 @@ public partial class ModIoSearchViewModel : ViewModelBase
 
     [ObservableProperty]
     private int _selectedCount;
+
+    /// <summary>mod.io's orders. It has no relevance ranking: "Most popular" is subscriber count.</summary>
+    private static readonly IReadOnlyList<SortChoice> Sorts =
+    [
+        new("Most popular", ModSortOrder.Relevance),
+        new("Most downloads", ModSortOrder.Downloads),
+        new("Highest rated", ModSortOrder.Endorsements),
+        new("Recently updated", ModSortOrder.Updated),
+        new("Recently added", ModSortOrder.Added),
+    ];
+
+    public IReadOnlyList<SortChoice> SortChoices => Sorts;
+
+    [ObservableProperty]
+    private SortChoice _selectedSort = Sorts[0];
+
+    [ObservableProperty]
+    private bool _adultContentOnly;
+
+    [ObservableProperty]
+    private int _currentPage = 1;
+
+    [ObservableProperty]
+    private bool _hasNextPage;
+
+    [ObservableProperty]
+    private bool _hasPreviousPage;
+
+    partial void OnSelectedSortChanged(SortChoice value) => _ = ExecuteSearchAsync();
+
+    partial void OnAdultContentOnlyChanged(bool value) => _ = ExecuteSearchAsync();
 
     /// <summary>The game to search; mod.io searches one game at a time.</summary>
     public GamePickerViewModel Game { get; }
@@ -65,11 +96,7 @@ public partial class ModIoSearchViewModel : ViewModelBase
         Game = new GamePickerViewModel(
             (name, ct) => backend.SearchGamesAsync(name, ct: ct),
             settings.ModIoGameIds.Select(id => id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        Game.GameChosen += (_, _) =>
-        {
-            if (!string.IsNullOrWhiteSpace(SearchText))
-                _ = ExecuteSearchAsync();
-        };
+        Game.GameChosen += (_, _) => _ = ExecuteSearchAsync();
     }
 
     partial void OnSearchTextChanged(string value)
@@ -84,17 +111,32 @@ public partial class ModIoSearchViewModel : ViewModelBase
     [RelayCommand]
     private async Task ExecuteSearchAsync()
     {
+        CurrentPage = 1;
+        await LoadPageAsync();
+    }
+
+    [RelayCommand]
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        CurrentPage++;
+        await LoadPageAsync();
+    }
+
+    [RelayCommand]
+    private async Task PreviousPageAsync()
+    {
+        if (CurrentPage <= 1) return;
+        CurrentPage--;
+        await LoadPageAsync();
+    }
+
+    // Empty search text browses the game's mods in the chosen order.
+    private async Task LoadPageAsync()
+    {
         if (_backend == null)
         {
             StatusMessage = "mod.io backend not available";
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(SearchText))
-        {
-            SearchResults.Clear();
-            TotalResults = 0;
-            StatusMessage = "Enter a search term to find mods on mod.io";
             return;
         }
 
@@ -102,7 +144,8 @@ public partial class ModIoSearchViewModel : ViewModelBase
         {
             SearchResults.Clear();
             TotalResults = 0;
-            StatusMessage = "Pick a game to search: mod.io searches one game at a time";
+            HasNextPage = HasPreviousPage = false;
+            StatusMessage = "Pick a game: mod.io searches one game at a time";
             return;
         }
 
@@ -116,28 +159,38 @@ public partial class ModIoSearchViewModel : ViewModelBase
             {
                 SearchResults.Clear();
                 TotalResults = 0;
+                HasNextPage = HasPreviousPage = false;
                 StatusMessage = $"No mod.io game is named \"{Game.Text.Trim()}\". Pick one from the list.";
                 return;
             }
 
-            StatusMessage = $"Searching mod.io for \"{SearchText}\" in {game.Name}...";
+            var terms = SearchText.Trim();
+            StatusMessage = terms.Length == 0
+                ? $"Listing {game.Name} mods on mod.io ({SelectedSort.Label.ToLowerInvariant()})..."
+                : $"Searching mod.io for \"{terms}\" in {game.Name}...";
 
             var result = await _backend.SearchModsAsync(new ModSearchQuery
             {
-                Terms = SearchText,
+                Terms = terms,
                 GameDomain = game.Id,
-                PageSize = PageSize
+                SortBy = SelectedSort.Order,
+                Page = CurrentPage,
+                PageSize = PageSize,
+                AdultContent = AdultContentOnly
             });
 
-            // mod.io ranks by popularity; float the closest name matches to the top
-            // without dropping anything the API matched on description or tags.
-            var ranked = result.Mods
-                .Select(mod => (mod, score: FuzzyMatcher.Score(SearchText, mod.Name)))
-                .OrderByDescending(x => x.score)
-                .Select(x => x.mod);
+            // With terms and the default order, float the closest name matches to the top
+            // without dropping anything the API matched on description or tags. Any other
+            // order is the user's choice and stays as mod.io gave it.
+            IEnumerable<BackendMod> ordered = terms.Length > 0 && SelectedSort.Order == ModSortOrder.Relevance
+                ? result.Mods
+                    .Select(mod => (mod, score: FuzzyMatcher.Score(terms, mod.Name)))
+                    .OrderByDescending(x => x.score)
+                    .Select(x => x.mod)
+                : result.Mods;
 
             SearchResults.Clear();
-            foreach (var mod in ranked)
+            foreach (var mod in ordered)
             {
                 var display = new ModDisplayModel(mod);
                 display.PropertyChanged += (_, e) =>
@@ -148,13 +201,13 @@ public partial class ModIoSearchViewModel : ViewModelBase
                 SearchResults.Add(display);
             }
 
-            TotalResults = SearchResults.Count;
+            TotalResults = result.TotalCount;
+            HasNextPage = result.HasNextPage;
+            HasPreviousPage = CurrentPage > 1;
             UpdateSelectedCount();
-            StatusMessage = TotalResults == 0
-                ? $"No mods found for \"{SearchText}\""
-                : result.TotalCount > TotalResults
-                    ? $"Showing {TotalResults} of {result.TotalCount} results on mod.io"
-                    : $"Found {TotalResults} result(s) on mod.io";
+            StatusMessage = result.TotalCount == 0
+                ? terms.Length == 0 ? $"No mods listed for {game.Name}" : $"No mods found for \"{terms}\""
+                : $"{result.TotalCount} mod(s) on mod.io (page {CurrentPage})";
         }
         catch (Exception ex)
         {

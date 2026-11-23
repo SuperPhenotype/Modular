@@ -241,6 +241,19 @@ public partial class NexusSearchViewModel : ViewModelBase
         }
     }
 
+    // A new order or adult setting starts the listing again from page 1, as the other sites do.
+    partial void OnSortOrderChanged(ModSortOrder value)
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedGame))
+            _ = ExecuteSearchAsync();
+    }
+
+    partial void OnAdultContentOnlyChanged(bool value)
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedGame))
+            _ = ExecuteSearchAsync();
+    }
+
     partial void OnSearchTextChanged(string value)
     {
         _debounceTimer?.Dispose();
@@ -327,9 +340,9 @@ public partial class NexusSearchViewModel : ViewModelBase
                 AdultContent = AdultContentOnly
             });
 
-            // Re-rank results by fuzzy match score when search terms are present,
+            // Re-rank results by fuzzy match score when searching by relevance,
             // but keep all API results (sort best matches to top, don't discard)
-            var ranked = !string.IsNullOrWhiteSpace(SearchText)
+            var ranked = !string.IsNullOrWhiteSpace(SearchText) && SortOrder == ModSortOrder.Relevance
                 ? result.Mods
                     .OrderByDescending(m => FuzzyMatcher.Score(SearchText, m.Name))
                     .ToList()

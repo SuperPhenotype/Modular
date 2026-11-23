@@ -162,7 +162,10 @@ public partial class ModIoViewModel : ViewModelBase
 
         try
         {
-            var states = await _tracking.SyncBaldursGate3Async(bg3.ToDictionary(m => m.ModId, m => m.Name));
+            // The game's mod folder is scanned synchronously: off the UI thread, so the
+            // window stays responsive while it runs.
+            var subscribed = bg3.ToDictionary(m => m.ModId, m => m.Name);
+            var states = await Task.Run(() => _tracking.SyncBaldursGate3Async(subscribed));
             foreach (var mod in bg3)
                 mod.InGameState = states.GetValueOrDefault(mod.ModId);
         }

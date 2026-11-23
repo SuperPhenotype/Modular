@@ -43,7 +43,7 @@
 
             <TextBox Grid.Column="1"
                      Text="{Binding SearchText}"
-                     Watermark="Search mod.io mods..."
+                     Watermark="Search mods... (leave empty to browse)"
                      Margin="0,0,10,0">
                 <TextBox.InnerLeftContent>
                     <mi:MaterialIcon Kind="Magnify" Width="16" Height="16" Margin="8,0,0,0" Opacity="0.5"/>
@@ -80,6 +80,14 @@
                 <Run Text="{Binding SelectedCount}"/>
                 <Run Text=" selected"/>
             </TextBlock>
+            <TextBlock Text="Sort:" VerticalAlignment="Center" Opacity="0.7" Margin="20,0,0,0"/>
+            <ComboBox ItemsSource="{Binding SortChoices}"
+                      SelectedItem="{Binding SelectedSort}"
+                      MinWidth="160"/>
+            <CheckBox Content="Adult Content Only"
+                      ToolTip.Tip="Ticked: only mods mod.io marks as explicit. Unticked: only mods that are not."
+                      IsChecked="{Binding AdultContentOnly}"
+                      VerticalAlignment="Center" Margin="10,0,0,0"/>
         </StackPanel>
 
         <!-- Results grid -->
@@ -146,10 +154,22 @@
 
         <!-- Footer -->
         <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,10,0,0">
-            <TextBlock Grid.Column="0" VerticalAlignment="Center" Opacity="0.7">
-                <Run Text="{Binding TotalResults}"/>
-                <Run Text=" results found"/>
-            </TextBlock>
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <TextBlock VerticalAlignment="Center" Opacity="0.7">
+                    <Run Text="{Binding TotalResults}"/>
+                    <Run Text=" results found"/>
+                </TextBlock>
+                <Button Command="{Binding PreviousPageCommand}"
+                        IsEnabled="{Binding HasPreviousPage}"
+                        Content="Previous" Padding="8,4"/>
+                <TextBlock VerticalAlignment="Center">
+                    <Run Text="Page "/>
+                    <Run Text="{Binding CurrentPage}"/>
+                </TextBlock>
+                <Button Command="{Binding NextPageCommand}"
+                        IsEnabled="{Binding HasNextPage}"
+                        Content="Next" Padding="8,4"/>
+            </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
                 <Button Command="{Binding SubscribeSelectedCommand}"
