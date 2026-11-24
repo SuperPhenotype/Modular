@@ -132,8 +132,10 @@ public partial class InstalledModsViewModel : ViewModelBase
 
         try
         {
-            var installed = await _installService.ListInstalledAsync();
-            var scanned = await ScanGamesAsync();
+            // The database and the library scan run synchronously underneath: off the UI thread.
+            var install = _installService;
+            var installed = await Task.Run(() => install.ListInstalledAsync());
+            var scanned = await Task.Run(ScanGamesAsync);
 
             _allRecords.Clear();
             _allRecords.AddRange(installed);
@@ -204,7 +206,9 @@ public partial class InstalledModsViewModel : ViewModelBase
         foreach (var game in managed)
         {
             var enabled = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-            foreach (var mod in await _installService!.Deployment.Mods.ListAsync(game.Key))
+            var mods = _installService!.Deployment.Mods;
+            var key = game.Key;
+            foreach (var mod in await Task.Run(() => mods.ListAsync(key)))
                 enabled[mod.ModId] = mod.Enabled;
 
             foreach (var record in game)

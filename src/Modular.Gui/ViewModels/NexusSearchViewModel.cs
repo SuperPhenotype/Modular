@@ -230,10 +230,10 @@ public partial class NexusSearchViewModel : ViewModelBase
             // Load the full NexusMods game list for autocomplete + fuzzy matching
             _allGames = await _nexusBackend.GetGamesAsync();
 
-            // Populate autocomplete with "domain — Display Name" for easy discovery
-            AvailableGames.Clear();
-            foreach (var (domain, name) in _allGames.OrderBy(g => g.Name))
-                AvailableGames.Add($"{domain} — {name}");
+            // Populate autocomplete with "domain — Display Name" for easy discovery. One new
+            // collection, not thousands of Adds: the box re-filters itself after every Add.
+            AvailableGames = new ObservableCollection<string>(
+                _allGames.OrderBy(g => g.Name).Select(g => $"{g.Domain} — {g.Name}"));
         }
         catch
         {

@@ -118,11 +118,18 @@ public partial class LoadOrderViewModel : ViewModelBase
             var previous = SelectedGame?.Key;
             var options = new List<LoadOrderGameOption>();
 
-            foreach (var key in await _installService.Deployment.Mods.ListGameKeysAsync())
+            // Database reads and game lookups run synchronously underneath: off the UI thread.
+            var deployment = _installService.Deployment;
+            options.AddRange(await Task.Run(async () =>
             {
-                var installation = await _installService.Deployment.ResolveInstallationAsync(key);
-                options.Add(new LoadOrderGameOption(key, installation?.DisplayName ?? key));
-            }
+                var found = new List<LoadOrderGameOption>();
+                foreach (var key in await deployment.Mods.ListGameKeysAsync())
+                {
+                    var installation = await deployment.ResolveInstallationAsync(key);
+                    found.Add(new LoadOrderGameOption(key, installation?.DisplayName ?? key));
+                }
+                return found;
+            }));
 
             Games.Clear();
             foreach (var option in options.OrderBy(o => o.DisplayName, StringComparer.OrdinalIgnoreCase))
@@ -149,14 +156,20 @@ public partial class LoadOrderViewModel : ViewModelBase
         IsBusy = true;
         try
         {
-            _installation = await _installService.Deployment.ResolveInstallationAsync(SelectedGame.Key);
-            if (_installation == null)
+            // Reading the orders opens every pak (Baldur's Gate 3): off the UI thread.
+            var service = _installService;
+            var key = SelectedGame.Key;
+            var (installation, orders) = await Task.Run(async () =>
+            {
+                var resolved = await service.Deployment.ResolveInstallationAsync(key);
+                return (resolved, resolved == null ? null : await service.LoadOrder.GetAsync(resolved));
+            });
+            _installation = installation;
+            if (_installation == null || orders == null)
             {
                 StatusMessage = $"Could not resolve {SelectedGame.DisplayName}.";
                 return;
             }
-
-            var orders = await _installService.LoadOrder.GetAsync(_installation);
 
             Kind = orders.Kind;
             RuleText = orders.Mechanism != null ? $"{orders.Rule} — {orders.Mechanism}" : orders.Rule;
@@ -201,22 +214,32 @@ public partial class LoadOrderViewModel : ViewModelBase
 
         try
         {
-            var service = _installService.LoadOrder;
-            DeploymentResult? deployment = null;
+            var install = _installService;
+            var installation = _installation;
+            var kind = Kind;
 
-            if (installChanged)
-                await service.SetAsync(_installation, OrderListKind.Install, installKeys, deploy: false);
+            // Saving deploys, which copies files: off the UI thread.
+            var deployment = await Task.Run(async () =>
+            {
+                var service = install.LoadOrder;
+                DeploymentResult? result = null;
 
-            // A load order Modular keeps is stored and then rendered by the one deploy; one
-            // the game keeps is written after it, so the file has every entry it lists.
-            if (loadChanged && Kind == LoadOrderKind.Managed)
-                await service.SetAsync(_installation, OrderListKind.Load, loadKeys, deploy: false);
+                if (installChanged)
+                    await service.SetAsync(installation, OrderListKind.Install, installKeys, deploy: false);
 
-            if (installChanged || (loadChanged && Kind == LoadOrderKind.Managed))
-                deployment = await _installService.Deployment.DeployAsync(_installation);
+                // A load order Modular keeps is stored and then rendered by the one deploy; one
+                // the game keeps is written after it, so the file has every entry it lists.
+                if (loadChanged && kind == LoadOrderKind.Managed)
+                    await service.SetAsync(installation, OrderListKind.Load, loadKeys, deploy: false);
 
-            if (loadChanged && Kind == LoadOrderKind.External)
-                deployment = await service.SetAsync(_installation, OrderListKind.Load, loadKeys, deploy: true);
+                if (installChanged || (loadChanged && kind == LoadOrderKind.Managed))
+                    result = await install.Deployment.DeployAsync(installation);
+
+                if (loadChanged && kind == LoadOrderKind.External)
+                    result = await service.SetAsync(installation, OrderListKind.Load, loadKeys, deploy: true);
+
+                return result;
+            });
 
             await RefreshAsync();
             StatusMessage = deployment is { Success: false }
