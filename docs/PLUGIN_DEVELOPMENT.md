@@ -275,5 +275,5 @@ See `examples/ExamplePlugin/` for a complete reference implementation.
 
 ## Support
 
-- File issues at: https://github.com/MasterGenotype/Modular-1/issues
+- File issues at: https://github.com/SuperPhenotype/Modular/issues
 - Example plugins: `examples/` directory

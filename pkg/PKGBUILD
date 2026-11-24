@@ -4,7 +4,7 @@ pkgver=r268.g27b6d6c
 pkgrel=1
 pkgdesc="Extensible mod manager for downloading, organizing, and managing game modifications (CLI + GUI)"
 arch=('x86_64')
-url="https://github.com/MasterGenotype/Modular-1"
+url="https://github.com/SuperPhenotype/Modular"
 license=('unknown')
 depends=('gcc-libs' 'glibc' 'openssl' 'icu' 'zlib'
          'libx11' 'libxcb' 'libxkbcommon' 'libxrandr' 'libxcursor' 'libxi'

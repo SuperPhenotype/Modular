@@ -131,7 +131,7 @@ Modular follows **TKMM v2.0.0-rc1** only, and uses TkSharp at the commit rc1 pin
 `797e76ec19bd6ce10af451a13909cffe8ddb21cd`. Nothing from rc2 or later is backported.
 
 `lib/TkSharp` is a git submodule tracking
-[MasterGenotype/TkSharp](https://github.com/MasterGenotype/TkSharp), branch
+[SuperPhenotype/TkSharp](https://github.com/SuperPhenotype/TkSharp), branch
 `modular/rc1-sharpcompress-0.50`: 797e76ec plus two patches, both for SharpCompress.
 
 1. **Build against SharpCompress 0.50.4.** rc1's TkSharp targets SharpCompress 0.40.0,

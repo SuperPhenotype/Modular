@@ -222,7 +222,7 @@ What's missing is:
 
 2. **Add a default index URL** to `AppSettings`:
    ```csharp
-   public string PluginMarketplaceUrl { get; set; } = "https://raw.githubusercontent.com/MasterGenotype/modular-plugins/main/index.json";
+   public string PluginMarketplaceUrl { get; set; } = "https://raw.githubusercontent.com/SuperPhenotype/modular-plugins/main/index.json";
    ```
 
 3. **Wire into the CLI**:

@@ -803,8 +803,8 @@ sudo dnf install dotnet-sdk-9.0
 
 ```bash
 # Clone the repository
-git clone https://github.com/MasterGenotype/Modular-1.git
-cd Modular-1
+git clone https://github.com/SuperPhenotype/Modular.git
+cd Modular
 
 # Build in Release mode
 dotnet build -c Release
