@@ -79,9 +79,18 @@ public sealed class DepotRenewCommand : AsyncCommand
         {
             await using var session = await Modular.Core.Steam.SteamSession.OpenStoredAsync(
                 new Modular.Core.Steam.SteamAccountStore(new Modular.Core.Security.DefaultSecretStore()), cts.Token);
-            var renewed = await service.RenewAsync(new SteamDepotClient(session),
+            var client = new SteamDepotClient(session);
+            var renewed = await service.RenewAsync(client,
                 new Progress<string>(m => AnsiConsole.MarkupLine(Markup.Escape(m))), cts.Token);
             LiveProgressDisplay.ShowSuccess(renewed.Count == 0 ? "Every pinned game's claim is still current." : $"Renewed {renewed.Count} game(s).");
+            foreach (var pin in service.Pins.List())
+            {
+                if (await service.FindBranchForPinAsync(pin.AppId, client, cts.Token) is not { } branch)
+                    continue;
+                var name = SteamAppManifest.Find(pin.AppId)?.Name ?? pin.AppId.ToString();
+                AnsiConsole.MarkupLine(Markup.Escape($"Steam now serves {name}'s held build as branch \"{branch.Name}\". Pin it there so it never needs renewing:"));
+                AnsiConsole.MarkupLine(Markup.Escape($"  modular depot pin {pin.AppId} --branch {branch.Name}"));
+            }
             return 0;
         }
         catch (Exception ex) when (ex is Modular.Core.Steam.SteamNotLoggedInException or Modular.Core.Steam.SteamLogOnException

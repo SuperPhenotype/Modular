@@ -164,7 +164,7 @@ public sealed class DepotVersionService
             foreach (var (depot, manifest) in pin.Depots)
             {
                 var onDisk = depots.FirstOrDefault(x => x.DepotId == depot);
-                if (onDisk?.ManifestId is { } m && m != manifest)
+                if (onDisk?.ManifestId is { } m && !SameBuild(depot, m, manifest))
                     drift.Add($"Depot {depot} on disk is {m}, pinned {manifest}.");
             }
             superseded = BuildPinner.IsSuperseded(acf, pin);
@@ -188,7 +188,7 @@ public sealed class DepotVersionService
         var acf = status.Acf;
         var installed = status.Depots.Where(d => d.ManifestId is not null).ToDictionary(d => d.DepotId, d => d.ManifestId!.Value);
         bool Matches(IReadOnlyDictionary<uint, ulong> manifests) =>
-            installed.Count > 0 && installed.All(i => !manifests.TryGetValue(i.Key, out var m) || m == i.Value)
+            installed.Count > 0 && installed.All(i => !manifests.TryGetValue(i.Key, out var m) || SameBuild(i.Key, i.Value, m))
             && manifests.Keys.Any(installed.ContainsKey);
 
         var versions = new List<GameVersion>();
@@ -459,17 +459,20 @@ public sealed class DepotVersionService
         }
         if (branch is not null)
         {
-            foreach (var app in acf.InstalledDepots.Select(d => d.DlcAppId ?? acf.AppId).Distinct())
-            {
-                var info = await client!.GetAppDepotsAsync(app, branch, ct);
-                if (app == acf.AppId)
-                    buildId = info.BuildId;
-                foreach (var d in info.Depots.Where(x => depots.ContainsKey(x.DepotId)))
-                {
-                    if (d.ManifestId != depots[d.DepotId].Item1)
-                        throw new DepotOperationException($"Branch '{branch}' has {d.ManifestId} for depot {d.DepotId}, but {depots[d.DepotId].Item1} is installed. Switch to the branch instead.");
-                }
-            }
+            // The game's own app lists every depot it serves, DLC ones included, per branch.
+            var branches = await client!.GetBranchesAsync(acf.AppId, ct);
+            var target = branches.FirstOrDefault(b => b.Name == branch)
+                ?? throw new DepotOperationException($"App {acf.AppId} has no branch '{branch}'. Branches: {string.Join(", ", branches.Select(b => b.Name))}");
+            if (target.PasswordRequired)
+                throw new DepotOperationException($"Branch '{branch}' needs a password; select it in Steam first.");
+            var installed = depots.ToDictionary(d => d.Key, d => d.Value.Item1);
+            var same = await BranchServesAsync(acf, installed, target, branches.FirstOrDefault(b => b.Name == "public"), client, ct)
+                ?? throw new DepotOperationException($"Branch '{branch}' serves a different build than the one installed. Switch to the branch instead.");
+            // Where the branch lists another manifest with the same files, record the branch's:
+            // Steam compares the acf with the branch and would otherwise download it again.
+            foreach (var (depot, onBranch) in same)
+                depots[depot] = (onBranch, depots[depot].Item2);
+            buildId = target.BuildId;
         }
 
         var previous = Pins.Load(acf.AppId);
@@ -480,6 +483,74 @@ public sealed class DepotVersionService
         Pins.Save(pin);
         return pin;
     }
+
+    /// <summary>
+    /// For a game held off a branch: the official branch that serves exactly its pinned build, or
+    /// null. Developers often publish the previous build as a branch after a patch (Cyberpunk's
+    /// <c>2_31_old</c>); pinning to it (<see cref="PinAsync"/> with the branch) makes Steam keep the
+    /// build by itself, so the pin no longer needs renewing.
+    /// </summary>
+    public async Task<SteamBranchInfo?> FindBranchForPinAsync(uint appId, SteamDepotClient client, CancellationToken ct = default)
+    {
+        var pin = Pins.Load(appId);
+        if (pin is null || pin.Branch is { } held && held != "public")
+            return null;
+        var acf = FindAcf(appId);
+        var branches = await client.GetBranchesAsync(appId, ct);
+        var publicBranch = branches.FirstOrDefault(b => b.Name == "public");
+        var mainDepot = acf.InstalledDepots.Where(d => pin.Depots.ContainsKey(d.DepotId))
+            .OrderByDescending(d => d.Size ?? 0).Select(d => d.DepotId).FirstOrDefault();
+        foreach (var candidate in BranchMatcher.Candidates(pin.Depots, branches, mainDepot))
+        {
+            if (await BranchServesAsync(acf, pin.Depots, candidate, publicBranch, client, ct) is not null)
+                return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="branch"/> serves the installed build. Returns the depots whose
+    /// branch manifest has other ids but identical files (Steam republishes some depots that way),
+    /// mapped to the branch's manifest; null when the branch serves another build.
+    /// </summary>
+    private async Task<Dictionary<uint, ulong>?> BranchServesAsync(SteamAppManifest acf, IReadOnlyDictionary<uint, ulong> installed,
+        SteamBranchInfo branch, SteamBranchInfo? publicBranch, SteamDepotClient client, CancellationToken ct)
+    {
+        if (BranchMatcher.Differences(installed, branch, publicBranch) is not { } differences)
+            return null;
+        var same = new Dictionary<uint, ulong>();
+        foreach (var (depot, have, onBranch) in differences)
+        {
+            var owner = acf.InstalledDepots.FirstOrDefault(d => d.DepotId == depot)?.DlcAppId ?? acf.AppId;
+            var a = await LoadOrFetchViewAsync(owner, depot, have, "public", client, ct);
+            var b = await LoadOrFetchViewAsync(owner, depot, onBranch, branch.Name, client, ct);
+            if (a is null || b is null || !DepotDiff.Compare(a, b).IsIdentical)
+                return null;
+            same[depot] = onBranch;
+        }
+        return same;
+    }
+
+    private async Task<ManifestView?> LoadOrFetchViewAsync(uint owner, uint depot, ulong manifest, string branch,
+        SteamDepotClient client, CancellationToken ct)
+    {
+        if (Store.LoadView(depot, manifest) is { } view)
+            return view;
+        try
+        {
+            var m = await client.DownloadManifestAsync(owner, depot, manifest, branch, ct);
+            Store.Save(m);
+            return ManifestView.From(m);
+        }
+        catch (DepotAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Two manifests of a depot are the same build: same id, or archived views with identical files.</summary>
+    private bool SameBuild(uint depot, ulong a, ulong b) =>
+        a == b || (Store.LoadView(depot, a) is { } va && Store.LoadView(depot, b) is { } vb && DepotDiff.Compare(va, vb).IsIdentical);
 
     /// <summary>What Steam serves as the latest public build of an app, compared with what it has installed.</summary>
     public sealed record LatestInfo(uint AppId, uint? LatestBuildId, DateTimeOffset? LatestDate, bool NewerThanInstalled, bool ClaimIsStale);

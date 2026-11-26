@@ -278,8 +278,9 @@ public partial class GameDetectionViewModel
     }
 
     /// <summary>
-    /// For games Modular holds on a build: badges the ones with a newer build out, and (Steam
-    /// closed) renews stale "let Steam launch it" claims so Play keeps working after a patch.
+    /// For games Modular holds on a build: badges the ones with a newer build out, (Steam closed)
+    /// renews stale "let Steam launch it" claims so Play keeps working after a patch, and points
+    /// out an official branch that now serves a held build.
     /// </summary>
     private async Task CheckPinnedGamesAsync(IReadOnlyList<GameDisplayModel> games)
     {
@@ -308,6 +309,12 @@ public partial class GameDetectionViewModel
                     : null;
                 if (latest.ClaimIsStale)
                     g.NewerBuildText += " · close Steam and open Modular to keep Play working";
+                if (await service.FindBranchForPinAsync((uint)g.AppId, client) is { } branch)
+                {
+                    g.NewerBuildText = (g.NewerBuildText ?? "Held on its build")
+                        + $" · Steam now serves your build as branch \"{branch.Name}\": pin it there from the game's Versions so it never needs renewing";
+                    StatusMessage = $"{g.DisplayName}: Steam now serves the held build as branch \"{branch.Name}\". Open the game's Versions to pin it there.";
+                }
             }
         }
         catch (Exception ex) when (ex is SteamNotLoggedInException or SteamLogOnException or SteamDisconnectedException

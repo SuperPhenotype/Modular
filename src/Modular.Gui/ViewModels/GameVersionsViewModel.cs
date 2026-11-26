@@ -45,12 +45,34 @@ public partial class GameVersionsViewModel : ViewModelBase
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private bool _isPinned;
     [ObservableProperty] private bool _isLocked;
-    [ObservableProperty] private bool _reportsCurrent;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanPinAsCurrent))]
+    private bool _reportsCurrent;
+
+    /// <summary>Pinned to an official branch: Steam holds the build itself, so there's no claim to make.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanPinAsCurrent))]
+    private bool _pinnedToBranch;
+
+    public bool CanPinAsCurrent => !ReportsCurrent && !PinnedToBranch;
     [ObservableProperty] private bool _steamRunning;
     [ObservableProperty] private bool _hasStagedSwitch;
 
     /// <summary>"A newer build is out: …" when the game is held on an older one.</summary>
     [ObservableProperty] private string _newerText = "";
+
+    /// <summary>The official branch that serves the build the game is held on, when it isn't pinned to it yet.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasBranchOffer), nameof(BranchOfferText), nameof(MoveToBranchLabel))]
+    private string? _branchOffer;
+
+    public bool HasBranchOffer => BranchOffer is not null;
+
+    public string BranchOfferText => BranchOffer is null ? ""
+        : $"Steam now serves your build as the official branch \"{BranchOffer}\". Pinned to that branch, Steam keeps this build "
+          + "by itself: it stops offering the update, and Modular no longer has to renew anything after a patch.";
+
+    public string MoveToBranchLabel => $"Pin to branch {BranchOffer}";
 
     /// <summary>After switching to a non-branch build, tell Steam it's current so Play works without updating.</summary>
     [ObservableProperty] private bool _tellSteamCurrentAfterSwitch = true;
@@ -112,6 +134,7 @@ public partial class GameVersionsViewModel : ViewModelBase
             IsPinned = pin is not null;
             IsLocked = pin is { Locked: true };
             ReportsCurrent = pin is { ReportsCurrent: true };
+            PinnedToBranch = pin?.Branch is { } pinnedBranch && pinnedBranch != "public";
             PinText = pin is null ? "Not pinned: Steam updates it normally."
                 : string.Join(" · ", new[]
                 {
@@ -142,6 +165,11 @@ public partial class GameVersionsViewModel : ViewModelBase
                         ? $"A newer build is out: {latest.LatestBuildId?.ToString() ?? "?"}{(latest.LatestDate is { } d ? $" ({d.LocalDateTime:yyyy-MM-dd})" : "")}. You're held on yours; switch below when you're ready."
                           + (latest.ClaimIsStale && _service.SteamRunning ? " Close Steam and refresh here so Play keeps working." : "")
                         : "";
+                    BranchOffer = (await _service.FindBranchForPinAsync(_appId, client))?.Name;
+                }
+                else
+                {
+                    BranchOffer = null;
                 }
                 versions = await _service.ListVersionsAsync(status, client);
             }
@@ -218,6 +246,24 @@ public partial class GameVersionsViewModel : ViewModelBase
         await _service.PinAsync(_appId, null, asCurrent: true, client);
         return "Pinned. Steam sees it as up to date, so Play launches this build. Lock it too, so a 'verify files' can't overwrite it.";
     }));
+
+    [RelayCommand]
+    private async Task MoveToBranchAsync()
+    {
+        if (BranchOffer is not { } branch)
+            return;
+        if (_dialogs is not null && !await _dialogs.ShowConfirmationAsync("Pin to official branch",
+                $"Pin {_gameName} to Steam's branch \"{branch}\"?\n\nYour files stay exactly as they are: the branch serves this very build. "
+                + "Steam will show the game on that branch in its Betas setting and won't update it. To go back to Steam's updates later, Unpin."
+                + (IsLocked ? "\n\nThe files stay locked." : "")
+                + "\n\nSteam must be closed."))
+            return;
+        await RunAsync($"Pinning to branch {branch}…", () => WithClientAsync(async (client, _) =>
+        {
+            await _service.PinAsync(_appId, branch, asCurrent: false, client);
+            return $"Pinned to branch {branch}. Steam keeps this build by itself now; nothing needs renewing after patches.";
+        }));
+    }
 
     [RelayCommand]
     private async Task UnpinAsync()
