@@ -161,6 +161,24 @@ public static class PackageTypes
     /// </summary>
     public const string Bg3ScriptExtender = "bg3.script_extender";
 
+    /// <summary>A Fallout 4 plugin (<c>.esp</c>, <c>.esm</c>, <c>.esl</c>) in <c>Data/</c>.</summary>
+    public const string Fo4Plugin = "fo4.plugin";
+
+    /// <summary>A Fallout 4 <c>.ba2</c> archive in <c>Data/</c>.</summary>
+    public const string Fo4Archive = "fo4.ba2";
+
+    /// <summary>A loose Fallout 4 data file (meshes, textures, scripts, interface...) in <c>Data/</c>.</summary>
+    public const string Fo4LooseData = "fo4.loose_data";
+
+    /// <summary>An F4SE plugin DLL in <c>Data/F4SE/Plugins/</c>.</summary>
+    public const string Fo4F4sePlugin = "fo4.f4se_plugin";
+
+    /// <summary>The Fallout 4 Script Extender itself, beside <c>Fallout4.exe</c>.</summary>
+    public const string Fo4ScriptExtender = "fo4.f4se";
+
+    /// <summary>A file beside <c>Fallout4.exe</c>: an ENB or ReShade, or a mod's <c>Root/</c> folder.</summary>
+    public const string Fo4GameRoot = "fo4.game_root";
+
     /// <summary>Anything the analyzer could not classify.</summary>
     public const string Unknown = "unknown";
 }

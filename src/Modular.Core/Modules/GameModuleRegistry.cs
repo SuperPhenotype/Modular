@@ -44,6 +44,7 @@ public sealed class GameModuleRegistry
         Register(new HorizonZeroDawnGameModule(factory));
         Register(new BaldursGate3GameModule(factory, categories));
         Register(new EnshroudedGameModule(factory));
+        Register(new Fallout4GameModule(factory));
     }
 
     /// <summary>

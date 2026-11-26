@@ -21,4 +21,7 @@ public static class GameIds
 
     /// <summary>Enshrouded (Steam AppID 1203620).</summary>
     public const string Enshrouded = "enshrouded";
+
+    /// <summary>Fallout 4 (Steam AppID 377160).</summary>
+    public const string Fallout4 = "fallout4";
 }
